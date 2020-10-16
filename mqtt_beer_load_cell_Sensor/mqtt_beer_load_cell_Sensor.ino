@@ -5,30 +5,48 @@
 #include <PubSubClient.h>
 #include <DHT.h>
 #include "config.h"
+// Include custom images
+#include "images.h"
+#include "SSD1306Brzo.h"
+SSD1306Brzo display(0x3c, D2, D1, GEOMETRY_128_32);
+
+
+#define ENABLE_DHT false
+#define ENABLE_DISPLAY true
+
+// Display variables
+#define DURATION 3000
+typedef void (*Screen)(void);
+int currentScreen = 0;
+
 
 DHT dht{DHT_PIN, DHT_TYPE};      // Initiate DHT library
 HX711 scale;                     // Initiate HX711 library
 WiFiClient wifiClient;           // Initiate WiFi library
 PubSubClient client(wifiClient); // Initiate PubSubClient library
 
-void setup()
-{
-  Serial.begin(74880);
-  Serial.println();
+void WiFiStart() {
   WiFi.mode(WIFI_STA);
+  Serial.print("Connecting to ");
+  Serial.println(SSID);
   WiFi.begin(SSID, PASSWORD);
-  Serial.print("Connecting...");
-
-  while (WiFi.status() != WL_CONNECTED)
-  { // Wait till Wifi connected
-    delay(500);
-    Serial.print(".");
+//  WiFi.config(ip, gateway, subnet);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+    Serial.print("_");   
+    digitalWrite(LED_BUILTIN, LOW);  
+    delay(10);    
+    digitalWrite(LED_BUILTIN, HIGH);                 
   }
   Serial.println();
+  Serial.println("Done");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.println("");
+                   
+}
 
-  Serial.print("Connected, IP address: ");
-  Serial.println(WiFi.localIP()); // Print IP address
-
+void setupScale() {
   client.setServer(MQTT_SERVER, 1883);              // Set MQTT server and port number
   client.setCallback(callback);                     // Set callback address, this is used for remote tare
   scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN); // Start scale on specified pins
@@ -39,13 +57,69 @@ void setup()
   scale.tare(); // Tare scale on startup
   scale.wait_ready();
   Serial.println("Scale Zeroed");
-
-  Serial.println("Start DHT library");
-  dht.begin();
 }
 
-void loop()
+void setupDisplay() {
+  // Initialising the UI will init the display too.
+  display.init();
+
+  display.flipScreenVertically();
+  display.setFont(ArialMT_Plain_10);
+}
+
+void setup()
 {
+  // initialize digital pin LED_BUILTIN as an output.
+  pinMode(LED_BUILTIN, OUTPUT);
+  Serial.begin(115200);
+  WiFiStart();
+  if (ENABLE_DISPLAY) {
+    setupDisplay();
+  }  
+  //setupScale();  
+  if (ENABLE_DHT) {
+    Serial.println("Start DHT library");
+    dht.begin();
+  }
+  
+}
+
+void drawStats() {
+    // create more fonts at http://oleddisplay.squix.ch/
+    display.setFont(ArialMT_Plain_24);
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.drawString(30, 5,  String(" ") +  String("0.00 "));
+    display.drawXbm(0, 0, beer_width, beer_height, beer_bits);
+}
+
+
+void drawLogo() {
+    // see http://blog.squix.org/2015/05/esp8266-nodemcu-how-to-create-xbm.html
+    // on how to create xbm files
+    display.drawXbm(0, 0, WiFi_Logo_width, WiFi_Logo_height, WiFi_Logo_bits);
+}
+
+Screen screens[] = {drawStats, drawLogo};
+int seqLength = (sizeof(screens) / sizeof(Screen));
+long timeSinceLastModeSwitch = 0;
+
+void drawDisplay() {
+  Serial.println("Displaying");
+  // clear the display
+  display.clear();
+  screens[currentScreen]();
+  // write the buffer to the display
+  display.display();
+
+  if (millis() - timeSinceLastModeSwitch > DURATION) {
+    currentScreen = (currentScreen + 1)  % seqLength;
+    timeSinceLastModeSwitch = millis();
+  }
+  delay(10);
+  Serial.println("Displayed");
+}
+
+void measureScale() {
   float reading;                       // Float for reading
   float raw;                           // Float for raw value which can be useful
   scale.wait_ready();                  // Wait till scale is ready, this is blocking if your hardware is not connected properly.
@@ -81,9 +155,11 @@ void loop()
 
   client.loop();      // MQTT task loop
   scale.power_down(); // Puts the scale to sleep mode for 3 seconds. I had issues getting readings if I did not do this
-  delay(3000);
+  delay(1000);
   scale.power_up();
+  }
 
+void measureTempAndHumidity() {
   // Reading values from the DHT sensor
   float humidity = dht.readHumidity();       // Read humidity
   float temperature = dht.readTemperature(); // Read temperature
@@ -97,6 +173,21 @@ void loop()
   client.publish(TEMPERATURE_TOPIC, String(temperature).c_str()); // Publish temperature to the temperature value topic
   client.publish(HUMIDITY_TOPIC, String(humidity).c_str());       // Publish humidity to the humidity value topic
 }
+void (* resetFunc) (void) = 0;
+void loop()
+{
+  drawDisplay();
+//  measureScale();
+  if (ENABLE_DHT) {
+    measureTempAndHumidity();
+  }
+  //Reconnect on lost WiFi connection
+  if (WiFi.status() != WL_CONNECTED) {
+    resetFunc();
+  }
+}
+
+
 
 void reconnect()
 {

@@ -1,7 +1,7 @@
 
 // Wifi Settings
-#define SSID                          "Hemma"
-#define PASSWORD                      "ringvattnet"
+#define SSID                          "Jarvis"
+#define PASSWORD                      "PebbleC2E3"
 
 // MQTT Settings
 #define HOSTNAME                      "beer_1"
