@@ -1,23 +1,39 @@
 
 // Wifi Settings
-#define SSID                          "Jarvis"
-#define PASSWORD                      "PebbleC2E3"
+#define SSID                          "<SSID>"
+#define PASSWORD                      "<PASSWORD>"
+
+#define ENABLE_DHT false
+#define ENABLE_DISPLAY true
+#define ENABLE_MQTT true
+#define ENABLE_SCALE true  // Only for debugging
+
+#define MEASURE_INTERVAL 10000 // 10 sec
 
 // MQTT Settings
-#define HOSTNAME                      "beer_1"
-#define MQTT_SERVER                   "192.168.8.125"
-#define STATE_TOPIC                   "beer_1"
-#define STATE_RAW_TOPIC               "beer_1/raw"
-#define AVAILABILITY_TOPIC            "beer_1/available"
-#define TARE_TOPIC                    "beer_1/tare"
-#define TEMPERATURE_TOPIC             "beer_1/temperature"
-#define HUMIDITY_TOPIC                "beer_1/humidity"
-#define mqtt_username                 "mqtt"
-#define mqtt_password                 "sakris16"
+#define HOSTNAME                      "beer1"
+#define MQTT_SERVER                   "industrial.api.ubidots.com"
+#define STATE_TOPIC                   "/v1.6/devices/beer1/volume"
+#define STATE_RAW_TOPIC               "/v1.6/devices/beer1/raw"
+#define AVAILABILITY_TOPIC            "/v1.6/devices/beer1/available"
+#define TARE_TOPIC                    "/v1.6/devices/beer1/tare"
+#define TEMPERATURE_TOPIC             "/v1.6/devices/beer1/temperature"
+#define HUMIDITY_TOPIC                "/v1.6/devices/beer1/humidity"
+#define mqtt_username                 "<Token>"
+#define mqtt_password                 ""
+#define PUBLISH_INTERVAL 900000 // Interval between publishing 900 * 1000 = 900000 = 15 mins
+
+
+// Display variables
+#define DURATION 2000 // Duration between screens
+typedef void (*Screen)(void);
+void drawStats();
+void drawLogo();
+Screen screens[] = {drawStats, drawLogo};
 
 // HX711 Pins
 const int LOADCELL_DOUT_PIN = 2;  // Remember these are ESP GPIO pins, they are not the physical pins on the board.
-const int LOADCELL_SCK_PIN = 0;
+const int LOADCELL_SCK_PIN = 3;
 int calibration_factor = -22500;  // Defines calibration factor we'll use for calibrating.
 int offset_factor = -137202;       // Defines offset factor if you have static weight on the loadcell. For exaple the wight of a empty Cornelius keg. 
 

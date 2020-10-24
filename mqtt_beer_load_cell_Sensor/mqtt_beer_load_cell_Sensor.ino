@@ -10,20 +10,21 @@
 #include "SSD1306Brzo.h"
 SSD1306Brzo display(0x3c, D2, D1, GEOMETRY_128_32);
 
-
-#define ENABLE_DHT false
-#define ENABLE_DISPLAY true
-
-// Display variables
-#define DURATION 3000
-typedef void (*Screen)(void);
-int currentScreen = 0;
-
-
 DHT dht{DHT_PIN, DHT_TYPE};      // Initiate DHT library
 HX711 scale;                     // Initiate HX711 library
 WiFiClient wifiClient;           // Initiate WiFi library
 PubSubClient client(wifiClient); // Initiate PubSubClient library
+
+String publishReading = "";
+String publishRaw = "";
+String publishTemperature = "";
+String publishHumidity = "";
+
+int currentScreen = 0;
+int seqLength = (sizeof(screens) / sizeof(Screen));
+long timeSinceLastModeSwitch = 0;
+long timeSinceLastPublish = 0;
+long timeSinceLastMeasurement = 0;
 
 void WiFiStart() {
   WiFi.mode(WIFI_STA);
@@ -47,8 +48,7 @@ void WiFiStart() {
 }
 
 void setupScale() {
-  client.setServer(MQTT_SERVER, 1883);              // Set MQTT server and port number
-  client.setCallback(callback);                     // Set callback address, this is used for remote tare
+  Serial.println("Starting Scale Setup");
   scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN); // Start scale on specified pins
   scale.wait_ready();                               //Ensure scale is ready, this is a blocking function
   scale.set_scale();
@@ -59,10 +59,16 @@ void setupScale() {
   Serial.println("Scale Zeroed");
 }
 
+void setupMqtt() {
+  Serial.println("Starting MQTT client");
+  client.setServer(MQTT_SERVER, 1883);              // Set MQTT server and port number
+  client.setCallback(callback);                     // Set callback address, this is used for remote tare
+}
+
 void setupDisplay() {
+  Serial.println("Starting Display");
   // Initialising the UI will init the display too.
   display.init();
-
   display.flipScreenVertically();
   display.setFont(ArialMT_Plain_10);
 }
@@ -71,12 +77,17 @@ void setup()
 {
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
-  Serial.begin(115200);
+  Serial.begin(74880);
   WiFiStart();
   if (ENABLE_DISPLAY) {
     setupDisplay();
   }  
-  //setupScale();  
+  if (ENABLE_MQTT){
+    setupMqtt();
+  }
+  if (ENABLE_SCALE) {
+    setupScale();   
+  }  
   if (ENABLE_DHT) {
     Serial.println("Start DHT library");
     dht.begin();
@@ -88,7 +99,7 @@ void drawStats() {
     // create more fonts at http://oleddisplay.squix.ch/
     display.setFont(ArialMT_Plain_24);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.drawString(30, 5,  String(" ") +  String("0.00 "));
+    display.drawString(30, 5,  String(" ") +  publishReading);
     display.drawXbm(0, 0, beer_width, beer_height, beer_bits);
 }
 
@@ -96,15 +107,11 @@ void drawStats() {
 void drawLogo() {
     // see http://blog.squix.org/2015/05/esp8266-nodemcu-how-to-create-xbm.html
     // on how to create xbm files
-    display.drawXbm(0, 0, WiFi_Logo_width, WiFi_Logo_height, WiFi_Logo_bits);
+    display.drawXbm(0, 0, Logo_width, Logo_height, Logo_bits);
 }
 
-Screen screens[] = {drawStats, drawLogo};
-int seqLength = (sizeof(screens) / sizeof(Screen));
-long timeSinceLastModeSwitch = 0;
-
 void drawDisplay() {
-  Serial.println("Displaying");
+  Serial.println("Displaying ");
   // clear the display
   display.clear();
   screens[currentScreen]();
@@ -116,48 +123,60 @@ void drawDisplay() {
     timeSinceLastModeSwitch = millis();
   }
   delay(10);
-  Serial.println("Displayed");
 }
 
 void measureScale() {
-  float reading;                       // Float for reading
-  float raw;                           // Float for raw value which can be useful
-  scale.wait_ready();                  // Wait till scale is ready, this is blocking if your hardware is not connected properly.
-  scale.set_scale(calibration_factor); // Sets the calibration factor.
-  //scale.set_offset(offset_factor);     // Sets the offset factor.
+    if (millis() - timeSinceLastMeasurement > MEASURE_INTERVAL) {
+      timeSinceLastMeasurement = millis();
+      scale.power_up();
+      float reading;                       // Float for reading
+      float raw;                           // Float for raw value which can be useful
+      scale.wait_ready();                  // Wait till scale is ready, this is blocking if your hardware is not connected properly.
+      scale.set_scale(calibration_factor); // Sets the calibration factor.
+      scale.set_offset(offset_factor);     // Sets the offset factor.
+    
+      Serial.print("Reading: "); // Prints weight readings in .2 decimal kg units.
+      scale.wait_ready();
+      reading = scale.get_units(10); //Read scale in g/Kg
+      raw = scale.read_average(5);   //Read raw value from scale too
+      Serial.print(reading, 1);
+      Serial.println(" L");
+      Serial.print("Raw: ");
+      Serial.println(raw);
+      Serial.print("Calibration factor: "); // Prints calibration factor.
+      Serial.println(calibration_factor);
+    
+      if (reading < 0)
+      {
+        reading = 0.00; //Sets reading to 0 if it is a negative value, sometimes loadcells will drift into slightly negative values
+      }
+    
+      publishReading = String(reading);
+      publishRaw = String(raw);
+      
+      scale.power_down(); // Puts the scale to sleep mode for 3 seconds. I had issues getting readings if I did not do this
+    }
+  }
 
+void publishMeasurements() {
   // Ensure we are still connected to MQTT Topics
   if (!client.connected())
   {
     reconnect();
   }
-
-  Serial.print("Reading: "); // Prints weight readings in .2 decimal kg units.
-  scale.wait_ready();
-  reading = scale.get_units(10); //Read scale in g/Kg
-  raw = scale.read_average(5);   //Read raw value from scale too
-  Serial.print(reading, 1);
-  Serial.println(" L");
-  Serial.print("Raw: ");
-  Serial.println(raw);
-  Serial.print("Calibration factor: "); // Prints calibration factor.
-  Serial.println(calibration_factor);
-
-  if (reading < 0)
-  {
-    reading = 0.00; //Sets reading to 0 if it is a negative value, sometimes loadcells will drift into slightly negative values
-  }
-
-  String value_str = String(reading);
-  String value_raw_str = String(raw);
-  client.publish(STATE_TOPIC, value_str.c_str());         // Publish weight to the STATE topic
-  client.publish(STATE_RAW_TOPIC, value_raw_str.c_str()); // Publish raw value to the RAW topic
-
-  client.loop();      // MQTT task loop
-  scale.power_down(); // Puts the scale to sleep mode for 3 seconds. I had issues getting readings if I did not do this
-  delay(1000);
-  scale.power_up();
-  }
+   if (millis() - timeSinceLastPublish > PUBLISH_INTERVAL) {
+      timeSinceLastPublish = millis();
+      Serial.println("Publishing");
+      client.publish(STATE_TOPIC, publishReading.c_str());         // Publish weight to the STATE topic
+      client.publish(STATE_RAW_TOPIC, publishRaw.c_str()); // Publish raw value to the RAW topic
+      if (ENABLE_DHT) {
+        client.publish(TEMPERATURE_TOPIC, publishTemperature.c_str()); // Publish temperature to the temperature value topic
+        client.publish(HUMIDITY_TOPIC, publishHumidity.c_str());       // Publish humidity to the humidity value topic
+    }
+      
+      client.loop();      // MQTT task loop
+   }
+}
 
 void measureTempAndHumidity() {
   // Reading values from the DHT sensor
@@ -169,17 +188,23 @@ void measureTempAndHumidity() {
   {
     Serial.println("Error while parse values to numbers from dht");
   }
-
-  client.publish(TEMPERATURE_TOPIC, String(temperature).c_str()); // Publish temperature to the temperature value topic
-  client.publish(HUMIDITY_TOPIC, String(humidity).c_str());       // Publish humidity to the humidity value topic
+  publishTemperature = String(temperature).c_str();
+  publishHumidity = String(humidity).c_str();
 }
 void (* resetFunc) (void) = 0;
 void loop()
 {
-  drawDisplay();
-//  measureScale();
+  if (ENABLE_DISPLAY) {
+    drawDisplay();
+  }
+  if (ENABLE_SCALE) {
+    measureScale(); 
+  }  
   if (ENABLE_DHT) {
     measureTempAndHumidity();
+  }
+  if (ENABLE_MQTT) {
+    publishMeasurements();
   }
   //Reconnect on lost WiFi connection
   if (WiFi.status() != WL_CONNECTED) {
