@@ -1,5 +1,6 @@
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <HX711.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -10,15 +11,17 @@
 #include "SSD1306Brzo.h"
 SSD1306Brzo display(0x3c, D2, D1, GEOMETRY_128_32);
 
+WiFiServer server(80);
+
 DHT dht{DHT_PIN, DHT_TYPE};      // Initiate DHT library
 HX711 scale;                     // Initiate HX711 library
 WiFiClient wifiClient;           // Initiate WiFi library
 PubSubClient client(wifiClient); // Initiate PubSubClient library
 
-String publishReading = "";
-String publishRaw = "";
-String publishTemperature = "";
-String publishHumidity = "";
+float publishVolume;
+float publishRaw;
+float publishTemperature;
+float publishHumidity;
 
 int currentScreen = 0;
 int seqLength = (sizeof(screens) / sizeof(Screen));
@@ -47,6 +50,20 @@ void WiFiStart() {
                    
 }
 
+String getJsonString() {
+  DynamicJsonDocument doc(1024);
+  doc["rawVolume"] = publishRaw;
+  doc["volume"] = publishVolume;
+  if (ENABLE_DHT) {
+    doc["temperature"] = publishTemperature;
+    doc["humidity"] = publishHumidity;
+  }
+  String output = "";
+  serializeJsonPretty(doc, output);
+  Serial.println("::"+output);
+  return output;
+}
+
 void setupScale() {
   Serial.println("Starting Scale Setup");
   scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN); // Start scale on specified pins
@@ -54,9 +71,11 @@ void setupScale() {
   scale.set_scale();
   Serial.println("Scale Set");
   scale.wait_ready();
-  scale.tare(); // Tare scale on startup
-  scale.wait_ready();
-  Serial.println("Scale Zeroed");
+  if (TARE_ON_START) {  // Tare scale on startup
+    scale.tare(); 
+    scale.wait_ready();
+    Serial.println("Scale Zeroed");
+  }
 }
 
 void setupMqtt() {
@@ -92,14 +111,15 @@ void setup()
     Serial.println("Start DHT library");
     dht.begin();
   }
-  
+  // Start the server
+  server.begin();
 }
 
 void drawStats() {
     // create more fonts at http://oleddisplay.squix.ch/
     display.setFont(ArialMT_Plain_24);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.drawString(30, 5,  String(" ") +  publishReading);
+    display.drawString(30, 5,  String(" ") +  String(publishVolume));
     display.drawXbm(0, 0, beer_width, beer_height, beer_bits);
 }
 
@@ -111,7 +131,7 @@ void drawLogo() {
 }
 
 void drawDisplay() {
-  Serial.println("Displaying ");
+  //  Serial.println("Displaying ");
   // clear the display
   display.clear();
   screens[currentScreen]();
@@ -149,10 +169,9 @@ void measureScale() {
       if (reading < 0)
       {
         reading = 0.00; //Sets reading to 0 if it is a negative value, sometimes loadcells will drift into slightly negative values
-      }
-    
-      publishReading = String(reading);
-      publishRaw = String(raw);
+      }    
+      publishVolume = reading;
+      publishRaw = raw;
       
       scale.power_down(); // Puts the scale to sleep mode for 3 seconds. I had issues getting readings if I did not do this
     }
@@ -167,15 +186,9 @@ void publishMeasurements() {
    if (millis() - timeSinceLastPublish > PUBLISH_INTERVAL) {
       timeSinceLastPublish = millis();
       Serial.println("Publishing");
-      client.publish(STATE_TOPIC, publishReading.c_str());         // Publish weight to the STATE topic
-      client.publish(STATE_RAW_TOPIC, publishRaw.c_str()); // Publish raw value to the RAW topic
-      if (ENABLE_DHT) {
-        client.publish(TEMPERATURE_TOPIC, publishTemperature.c_str()); // Publish temperature to the temperature value topic
-        client.publish(HUMIDITY_TOPIC, publishHumidity.c_str());       // Publish humidity to the humidity value topic
-    }
-      
-      client.loop();      // MQTT task loop
+      client.publish(TOPIC, getJsonString().c_str());         // Publish weight to the STATE topic
    }
+   client.loop();      // MQTT task loop
 }
 
 void measureTempAndHumidity() {
@@ -188,9 +201,46 @@ void measureTempAndHumidity() {
   {
     Serial.println("Error while parse values to numbers from dht");
   }
-  publishTemperature = String(temperature).c_str();
-  publishHumidity = String(humidity).c_str();
+  publishTemperature = temperature;
+  publishHumidity = humidity;
 }
+void readHttpRequests() {
+  WiFiClient client = server.available();
+  if (!client) {
+    return;
+  }
+ 
+  // Wait until the client sends some data
+  Serial.println("new client");
+  while(!client.available()){
+    delay(1);
+  }
+ 
+  // Read the first line of the request
+  String request = client.readStringUntil('\r');
+  Serial.println(request);
+  client.flush();
+  // Return the response
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/json");
+  client.println(""); //  do not forget this one
+  // Match the request
+  int value = 0;
+  if (request.indexOf("/getstatus") != -1) {
+    client.print(getJsonString());
+  } 
+  else if (request.indexOf("/tare") != -1) {
+    tare();
+    client.print("Scale reset");
+  }
+  else {
+    client.print("Serving");
+  }
+  delay(1);
+  Serial.println("Client disconnected");
+  Serial.println("");
+}
+
 void (* resetFunc) (void) = 0;
 void loop()
 {
@@ -210,6 +260,7 @@ void loop()
   if (WiFi.status() != WL_CONNECTED) {
     resetFunc();
   }
+  readHttpRequests();
 }
 
 
@@ -222,7 +273,6 @@ void reconnect()
     if (client.connect(HOSTNAME, mqtt_username, mqtt_password))
     { //Connect to MQTT server
       Serial.println("connected");
-      client.publish(AVAILABILITY_TOPIC, "online"); // Once connected, publish online to the availability topic
       client.subscribe(TARE_TOPIC);                 //Subscribe to tare topic for remote tare
     }
     else
@@ -235,14 +285,20 @@ void reconnect()
   }
 }
 
-void callback(char *topic, byte *payload, unsigned int length)
-{
-  if (strcmp(topic, TARE_TOPIC) == 0)
-  {
+void tare() {
     Serial.println("starting tare...");
+    scale.power_up();
     scale.wait_ready();
     scale.set_scale();
     scale.tare(); //Reset scale to zero
     Serial.println("Scale reset to zero");
+    scale.power_down();
+}
+
+void callback(char *topic, byte *payload, unsigned int length)
+{
+  if (strcmp(topic, TARE_TOPIC) == 0)
+  {
+    tare();
   }
 }

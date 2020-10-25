@@ -1,24 +1,21 @@
 
 // Wifi Settings
 #define SSID                          "<SSID>"
-#define PASSWORD                      "<PASSWORD>"
+#define PASSWORD                      "<Password>"
 
 #define ENABLE_DHT false
 #define ENABLE_DISPLAY true
 #define ENABLE_MQTT true
 #define ENABLE_SCALE true  // Only for debugging
+#define TARE_ON_START false
 
 #define MEASURE_INTERVAL 10000 // 10 sec
 
 // MQTT Settings
 #define HOSTNAME                      "beer1"
 #define MQTT_SERVER                   "industrial.api.ubidots.com"
-#define STATE_TOPIC                   "/v1.6/devices/beer1/volume"
-#define STATE_RAW_TOPIC               "/v1.6/devices/beer1/raw"
-#define AVAILABILITY_TOPIC            "/v1.6/devices/beer1/available"
+#define TOPIC                         "/v1.6/devices/beer1"
 #define TARE_TOPIC                    "/v1.6/devices/beer1/tare"
-#define TEMPERATURE_TOPIC             "/v1.6/devices/beer1/temperature"
-#define HUMIDITY_TOPIC                "/v1.6/devices/beer1/humidity"
 #define mqtt_username                 "<Token>"
 #define mqtt_password                 ""
 #define PUBLISH_INTERVAL 900000 // Interval between publishing 900 * 1000 = 900000 = 15 mins
